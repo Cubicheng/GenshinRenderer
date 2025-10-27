@@ -3,7 +3,12 @@ Shader "GenshinToon/Body"
     Properties //public 成员变量
     {
         [Header(Textures)]
-        _BaseMap ("Base Map", 2D) = "white"{} //基础纹理
+        //基础纹理
+        _BaseMap ("Base Map", 2D) = "white"{} 
+        //光照贴图
+        _LightMap ("Light Map", 2D) = "white"{}
+        //环境光遮蔽开关
+        [Toggle(_USE_LIGHTMAP_AO)] _UseLightMapAO ("Use LightMap AO",Range(0,1)) = 1
     }
     SubShader
     {
@@ -26,11 +31,16 @@ Shader "GenshinToon/Body"
             #pragma multi_compile_fragment _SHADOWS_SOFT //阴影软化
             #pragma multi_compile_fragment _REFLECTION_PROBE_BOX_PROJECTION //反射探针盒投影
 
+            #pragma shader_feature_local _USE_LIGHTMAP_AO
+
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl" //核心库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl" //光照库
         
             CBUFFER_START(UnityPerMaterial)
-                sampler2D _BaseMap; //基础纹理
+                //基础纹理
+                sampler2D _BaseMap;
+                //光照贴图
+                sampler2D _LightMap;
             CBUFFER_END
         
         ENDHLSL //公共代码块结束
@@ -96,6 +106,7 @@ Shader "GenshinToon/Body"
 
                     //采样纹理贴图
                     half4 baseMap = tex2D(_BaseMap, input.uv0);
+                    half4 lightMap = tex2D(_LightMap, input.uv0);
 
                     //兰伯特光照 [-1,1]
                     half lambert = dot(normalizedNormal,normalizedLight);
@@ -106,9 +117,21 @@ Shader "GenshinToon/Body"
                     //整体压暗
                     halfLambert = pow(halfLambert,2);
 
+                    //环境光遮蔽
+                    half ambientLight;
+                    #if _USE_LIGHTMAP_AO
+                        ambientLight = lightMap.g;
+                    #else
+                        ambientLight = halfLambert;
+                    #endif
+
+                    half shadow = (ambientLight + halfLambert) * 0.5 + 0.2;
+                    shadow = lerp(shadow,1,step(0.95,ambientLight));
+                    shadow = lerp(shadow,0,step(ambientLight,0.05));
+
                     //合并颜色
-                    half3 finalColor = baseMap.rgb * halfLambert;
-                    return float4(finalColor,1);
+                    half3 finalColor = baseMap.rgb * halfLambert * shadow;
+                    return float4(finalColor.rgb,1);
                 }
 
             ENDHLSL
