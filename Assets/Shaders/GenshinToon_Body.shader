@@ -80,7 +80,7 @@ Shader "GenshinToon/Body"
             float RampShadowID(float input, float useShadow2, float useShadow3, float useShadow4, float useShadow5, 
                 float shadowValue1, float shadowValue2, float shadowValue3, float shadowValue4, float shadowValue5)
             {
-                // 根据input值将模型分为5个区域
+                // 根据input值将模型分为5个区域，只会有一个为1
                 float v1 = step(0.6, input) * step(input, 0.8); // 0.6-0.8区域
                 float v2 = step(0.4, input) * step(input, 0.6); // 0.4-0.6区域
                 float v3 = step(0.2, input) * step(input, 0.4); // 0.2-0.4区域
@@ -88,9 +88,9 @@ Shader "GenshinToon/Body"
 
                 // 根据开关控制是否使用不同材质的值
                 float blend12 = lerp(shadowValue1, shadowValue2, useShadow2);
-                float blend15 = lerp(shadowValue1, shadowValue5, useShadow5);
                 float blend13 = lerp(shadowValue1, shadowValue3, useShadow3);
                 float blend14 = lerp(shadowValue1, shadowValue4, useShadow4);
+                float blend15 = lerp(shadowValue1, shadowValue5, useShadow5);
 
                 // 根据区域选择对应的材质值
                 float result = blend12;                // 默认使用材质1或2
@@ -209,6 +209,7 @@ Shader "GenshinToon/Body"
                     //Ramp横纵坐标
                     half rampU = 1 - saturate(shadowDepth/rampWidthFactor);
                     half rampID = RampShadowID(lightMap.a,_UseRampShadow2,_UseRampShadow3,_UseRampShadow4,_UseRampShadow5,1,2,3,4,5);
+                    //[1,5]->[0.45,0.05]的线性映射
                     half rampV = 0.45-(rampID-1)*0.1;
                     //rampV+0.5，使用下半部分的第二套阴影颜色
                     half2 rampDayUV = half2(rampU,rampV+0.5);
