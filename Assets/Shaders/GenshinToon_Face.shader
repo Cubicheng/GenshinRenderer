@@ -144,18 +144,18 @@ Shader "GenshinToon/Face"
                     halfLambert = pow(halfLambert,2);
 
                     //face shadow
-                    half3 LpU = dot(lightDir, headUpDir) / pow(length(headUpDir), 2) * headUpDir; // 计算光源方向在面部上方的投影
-                    half3 LpHeadHorizon = normalize(lightDir - LpU); // 光照方向在头部水平面上的投影
+                    half3 LpU = dot(lightDir, headUpDir) / pow(length(headUpDir), 2) * headUpDir; // 计算lightDir在headUpDir的投影
+                    half3 LpHeadHorizon = normalize(lightDir - LpU); // lightDir在头部水平面上的投影
                     half value = acos(dot(LpHeadHorizon, headRightDir)) / 3.141592654; // 计算光照方向与面部右方的夹角
                     half exposeRight = step(value, 0.5); // 判断光照是来自右侧还是左侧
                     half valueR = pow(1 - value * 2, 3); // 右侧阴影强度
                     half valueL = pow(value * 2 - 1, 3); // 左侧阴影强度
                     half mixValue = lerp(valueL, valueR, exposeRight); // 混合阴影强度
-                    half sdfLeft = tex2D(_SDF, half2(1 - input.uv0.x, input.uv0.y)).r; // 左侧距离场
+                    half sdfLeft = tex2D(_SDF, half2(1 - input.uv0.x, input.uv0.y)).r; // 左侧距离场，镜像采样
                     half sdfRight = tex2D(_SDF, input.uv0).r; // 右侧距离场
                     half mixSdf = lerp(sdfRight, sdfLeft, exposeRight); // 采样SDF纹理
                     half sdf = step(mixValue, mixSdf); // 计算硬边界阴影
-                    sdf = lerp(0, sdf, step(0, dot(LpHeadHorizon, headForwardDir))); // 计算右侧阴影
+                    sdf = lerp(0, sdf, step(0, dot(LpHeadHorizon, headForwardDir))); // 如果背光，强制全黑
                     sdf *= shadowMask.g; // 使用G通道控制阴影强度
                     sdf = lerp(sdf, 1, shadowMask.a); // 使用A通道作为阴影遮罩
 
@@ -166,6 +166,7 @@ Shader "GenshinToon/Face"
                     
                     #if _USE_SDF_SHADOW
                         finalColor = lerp(_ShadowColor.rgb*baseMap.rgb,baseMap.rgb,sdf);
+                        // finalColor = float3(sdf,sdf,sdf);
                     #else
                         finalColor = baseMap.rgb * halfLambert;
                     #endif
@@ -173,6 +174,83 @@ Shader "GenshinToon/Face"
                     finalColor = lerp(finalColor, finalColor *_FaceBlushColor.rgb, faceBlushStrength);
 
                     return float4(finalColor,1);
+                }
+
+            ENDHLSL
+        }
+        Pass{ //渲染通道
+            Name "ShadowCaster"
+
+            Tags{
+                "LightMode" = "ShadowCaster"
+            }
+
+            ZWrite On //写入深度缓冲区
+            ZTest LEqual //速度测试：小于等于
+            ColorMask 0 //不写入颜色缓冲区
+            Cull Off //不裁剪
+
+            HLSLPROGRAM
+                #pragma multi_compile_instancing // 启用GPU实例化编译
+                #pragma multi_compile _ DOTS_INSTANCING_ON // 启用DOTS实例化编译
+                #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW // 启用点光源阴影
+
+                #pragma vertex MainVertexShader
+                #pragma fragment MainFragmentShader
+
+                float3 _LightDirection;
+                float3 _LightPosition;
+
+                //顶点着色器输入参数
+                struct Attributes
+                {
+                    //本地空间顶点坐标
+                    float4 positionOS : POSITION;
+                    //本地坐标法线
+                    float3 normalOS : NORMAL;
+                };
+
+                //片元着色器输入参数，由顶点着色器传递
+                struct Varyings
+                {
+                    //裁剪空间顶点坐标
+                    float4 positionCS : SV_POSITION;
+                };
+
+                // 将阴影的世界空间顶点位置转换为适合阴影投射的裁剪空间位置
+                float4 GetShadowPositionHClip(Attributes input)
+                {
+                    float3 positionWS = TransformObjectToWorld(input.positionOS.xyz); // 将本地空间顶点坐标转换为世界空间顶点坐标
+                    float3 normalWS = TransformObjectToWorldNormal(input.normalOS); // 将本地空间法线转换为世界空间法线
+
+                    #if _CASTING_PUNCTUAL_LIGHT_SHADOW // 点光源
+                        float3 lightDirectionWS = normalize(_LightPosition - positionWS); // 计算光源方向
+                    #else // 平行光
+                        float3 lightDirectionWS = _LightDirection; // 使用预定义的光源方向
+                    #endif
+
+                    float4 positionCS = TransformWorldToHClip(ApplyShadowBias(positionWS, normalWS, lightDirectionWS)); // 应用阴影偏移
+
+                    // 根据平台的Z缓冲区方向调整Z值
+                    #if UNITY_REVERSED_Z // 反转Z缓冲区
+                        positionCS.z = min(positionCS.z, UNITY_NEAR_CLIP_VALUE); // 限制Z值在近裁剪平面以下
+                    #else // 正向Z缓冲区
+                        positionCS.z = max(positionCS.z, UNITY_NEAR_CLIP_VALUE); // 限制Z值在远裁剪平面以上
+                    #endif
+
+                    return positionCS; // 返回裁剪空间顶点坐标
+                }
+
+                Varyings MainVertexShader(Attributes input)
+                {
+                    Varyings output;
+                    //裁剪空间的顶点坐标
+                    output.positionCS = GetShadowPositionHClip(input);
+                    return output;
+                }
+
+                half4 MainFragmentShader(Varyings input) : SV_TARGET{
+                    return 0;
                 }
 
             ENDHLSL
