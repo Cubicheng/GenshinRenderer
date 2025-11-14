@@ -101,6 +101,122 @@ Shader "GenshinToon/Body"
 
                 return result;
             }
+
+            //顶点着色器输入参数
+            struct UniversalAttributes
+            {
+                //本地空间顶点坐标
+                float4 positionObjectSpace : POSITION;
+                //第一套纹理坐标
+                float2 uv0 : TEXCOORD0;
+                //第二套纹理坐标
+                float2 uv1 : TEXCOORD1;
+                //本地坐标法线
+                float3 normalOS : NORMAL;
+                //顶点颜色
+                float4 color : COLOR0;
+            };
+
+            //片元着色器输入参数，由顶点着色器传递
+            struct UniversalVaryings
+            {
+                //裁剪空间顶点坐标
+                float4 positionCS : SV_POSITION;
+                //第一套纹理坐标
+                float2 uv0 : TEXCOORD0;
+                //世界空间的法线
+                float3 normalWS : TEXCOORD1;
+                //顶点颜色
+                float4 color : TEXCOORD2;
+            };
+
+            UniversalVaryings MainVertexShader(UniversalAttributes input)
+            {
+                UniversalVaryings output;
+                //转换顶点空间
+                VertexPositionInputs vertexInput = GetVertexPositionInputs(input.positionObjectSpace.xyz);
+                //裁剪空间的顶点坐标
+                output.positionCS = vertexInput.positionCS;
+
+                //转换法线空间
+                VertexNormalInputs vertexNormalInputs = GetVertexNormalInputs(input.normalOS);
+                output.normalWS = vertexNormalInputs.normalWS;
+
+                //纹理坐标
+                output.uv0 = input.uv0;
+
+                output.color = input.color;
+
+                return output;
+            }
+
+            half4 MainFragmentShader(UniversalVaryings input) : SV_TARGET
+            {
+                Light light = GetMainLight();
+                half4 vertexColor = input.color;
+
+                half3 normalizedNormal = normalize(input.normalWS);
+                half3 normalizedLight = normalize(light.direction);
+
+                //采样纹理贴图
+                half4 baseMap = tex2D(_BaseMap, input.uv0);
+                half4 lightMap = tex2D(_LightMap, input.uv0);
+
+                //兰伯特光照 [-1,1]
+                half lambert = dot(normalizedNormal,normalizedLight);
+
+                //半兰伯特光照 [0,1]，让暗部不要那么黑
+                half halfLambert = lambert * 0.5 + 0.5;
+
+                //整体压暗
+                halfLambert *= pow(halfLambert,2);
+
+                half lambertStep = smoothstep(0.01,0.4,halfLambert);
+                half shadowFactor = lerp(0,halfLambert,lambertStep);
+
+                //环境光遮蔽
+                half ambientLight;
+                #if _USE_LIGHTMAP_AO
+                    ambientLight = lightMap.g;
+                #else
+                    ambientLight = halfLambert;
+                #endif
+
+                half shadow = (ambientLight + halfLambert) * 0.5;
+                shadow = lerp(shadow,1,step(0.95,ambientLight));
+                shadow = lerp(shadow,0,step(ambientLight,0.05));
+                half isShadowArea = step(shadow, _ShadowPosition);
+                half shadowDepth = (_ShadowPosition-shadow)/_ShadowPosition;
+                shadowDepth = pow(shadowDepth,_ShadowSoftness);
+                shadowDepth = min(shadowDepth,1);
+                //控制ramp宽度
+                half rampWidthFactor = vertexColor.g * 2 * _ShadowRampWidth;
+                half shadowPosition = (_ShadowPosition - shadowFactor) / _ShadowPosition;
+
+                //Ramp横纵坐标
+                half rampU = 1 - saturate(shadowDepth/rampWidthFactor);
+                half rampID = RampShadowID(lightMap.a,_UseRampShadow2,_UseRampShadow3,_UseRampShadow4,_UseRampShadow5,1,2,3,4,5);
+                //[1,5]->[0.45,0.05]的线性映射
+                half rampV = 0.45-(rampID-1)*0.1;
+                //rampV+0.5，使用下半部分的第二套阴影颜色
+                half2 rampDayUV = half2(rampU,rampV+0.5);
+                half3 rampDayColor = tex2D(_RampTex,rampDayUV);
+                half2 rampNightUV = half2(rampU,rampV);
+                half3 rampNightColor = tex2D(_RampTex,rampNightUV);
+                half3 rampColor = lerp(rampDayColor,rampNightColor,_DayOrNight);
+
+                half3 finalColor;
+                //合并颜色
+                #if _USE_RAMP_SHADOW
+                //采用ramp阴影
+                //暗部不变，亮部提亮50%，整体是高调
+                    finalColor = baseMap.rgb * rampColor * (isShadowArea?1:1.5);
+                #else
+                //采用兰伯特阴影
+                    finalColor = baseMap.rgb * halfLambert * (shadow+0.2);
+                #endif
+                return float4(finalColor.rgb,1);
+            }
         
         ENDHLSL //公共代码块结束
 
@@ -112,131 +228,47 @@ Shader "GenshinToon/Body"
                 "LightMode" = "UniversalForward"
             }
 
+            Cull Back
+
             HLSLPROGRAM //shader program
                 //声明两种shader
                 #pragma vertex MainVertexShader
                 #pragma fragment MainFragmentShader
 
-                //顶点着色器输入参数
-                struct Attributes
-                {
-                    //本地空间顶点坐标
-                    float4 positionObjectSpace : POSITION;
-                    //第一套纹理坐标
-                    float2 uv0 : TEXCOORD0;
-                    //本地坐标法线
-                    float3 normalOS : NORMAL;
-                    //顶点颜色
-                    float4 color : COLOR0;
-                };
+            ENDHLSL
+        }
 
-                //片元着色器输入参数，由顶点着色器传递
-                struct Varyings
-                {
-                    //裁剪空间顶点坐标
-                    float4 positionCS : SV_POSITION;
-                    //第一套纹理坐标
-                    float2 uv0 : TEXCOORD0;
-                    //世界空间的法线
-                    float3 normalWS : TEXCOORD1;
-                    //顶点颜色
-                    float4 color : TEXCOORD2;
-                };
+        Pass //渲染通道，反面渲染
+        {
+            Name "UniversalForward"
+            Tags
+            {
+                "LightMode" = "SRPDefaultUnlit"
+                "Queue" = "Geometry+1" //渲染队列：在正面之后渲染
+            }
 
-                Varyings MainVertexShader(Attributes input)
-                {
-                    Varyings output;
-                    //转换顶点空间
-                    VertexPositionInputs vertexInput = GetVertexPositionInputs(input.positionObjectSpace.xyz);
-                    //裁剪空间的顶点坐标
-                    output.positionCS = vertexInput.positionCS;
+            Cull Front
 
-                    //转换法线空间
-                    VertexNormalInputs vertexNormalInputs = GetVertexNormalInputs(input.normalOS);
-                    output.normalWS = vertexNormalInputs.normalWS;
+            HLSLPROGRAM //shader program
+                //声明两种shader
+                #pragma vertex BackVertexShader
+                #pragma fragment MainFragmentShader
 
-                    //纹理坐标
-                    output.uv0 = input.uv0;
-
-                    output.color = input.color;
-
+                UniversalVaryings BackVertexShader(UniversalAttributes input){
+                    UniversalVaryings output = MainVertexShader(input);
+                    output.uv0 = input.uv1;//背面使用第二套纹理贴图坐标
+                    output.normalWS = -output.normalWS;//背面法线反向
                     return output;
-                }
-
-                half4 MainFragmentShader(Varyings input) : SV_TARGET
-                {
-                    Light light = GetMainLight();
-                    half4 vertexColor = input.color;
-
-                    half3 normalizedNormal = normalize(input.normalWS);
-                    half3 normalizedLight = normalize(light.direction);
-
-                    //采样纹理贴图
-                    half4 baseMap = tex2D(_BaseMap, input.uv0);
-                    half4 lightMap = tex2D(_LightMap, input.uv0);
-
-                    //兰伯特光照 [-1,1]
-                    half lambert = dot(normalizedNormal,normalizedLight);
-
-                    //半兰伯特光照 [0,1]，让暗部不要那么黑
-                    half halfLambert = lambert * 0.5 + 0.5;
-
-                    //整体压暗
-                    halfLambert *= pow(halfLambert,2);
-
-                    half lambertStep = smoothstep(0.01,0.4,halfLambert);
-                    half shadowFactor = lerp(0,halfLambert,lambertStep);
-
-                    //环境光遮蔽
-                    half ambientLight;
-                    #if _USE_LIGHTMAP_AO
-                        ambientLight = lightMap.g;
-                    #else
-                        ambientLight = halfLambert;
-                    #endif
- 
-                    half shadow = (ambientLight + halfLambert) * 0.5;
-                    shadow = lerp(shadow,1,step(0.95,ambientLight));
-                    shadow = lerp(shadow,0,step(ambientLight,0.05));
-                    half isShadowArea = step(shadow, _ShadowPosition);
-                    half shadowDepth = (_ShadowPosition-shadow)/_ShadowPosition;
-                    shadowDepth = pow(shadowDepth,_ShadowSoftness);
-                    shadowDepth = min(shadowDepth,1);
-                    //控制ramp宽度
-                    half rampWidthFactor = vertexColor.g * 2 * _ShadowRampWidth;
-                    half shadowPosition = (_ShadowPosition - shadowFactor) / _ShadowPosition;
-
-                    //Ramp横纵坐标
-                    half rampU = 1 - saturate(shadowDepth/rampWidthFactor);
-                    half rampID = RampShadowID(lightMap.a,_UseRampShadow2,_UseRampShadow3,_UseRampShadow4,_UseRampShadow5,1,2,3,4,5);
-                    //[1,5]->[0.45,0.05]的线性映射
-                    half rampV = 0.45-(rampID-1)*0.1;
-                    //rampV+0.5，使用下半部分的第二套阴影颜色
-                    half2 rampDayUV = half2(rampU,rampV+0.5);
-                    half3 rampDayColor = tex2D(_RampTex,rampDayUV);
-                    half2 rampNightUV = half2(rampU,rampV);
-                    half3 rampNightColor = tex2D(_RampTex,rampNightUV);
-                    half3 rampColor = lerp(rampDayColor,rampNightColor,_DayOrNight);
-
-                    half3 finalColor;
-                    //合并颜色
-                    #if _USE_RAMP_SHADOW
-                    //采用ramp阴影
-                        finalColor = baseMap.rgb * rampColor * (isShadowArea?1:1.2);
-                    #else
-                    //采用兰伯特阴影
-                        finalColor = baseMap.rgb * halfLambert * (shadow+0.2);
-                    #endif
-                    return float4(finalColor.rgb,1);
                 }
 
             ENDHLSL
         }
+
         Pass{ //渲染通道
             Name "ShadowCaster"
 
             Tags{
-                "LightMode" = "ShadowCaster"
+                "LightMode" = "ShadowCaster" //关键在这里，这一行告诉阴影投射器，我是遮光的
             }
 
             ZWrite On //写入深度缓冲区
@@ -283,7 +315,7 @@ Shader "GenshinToon/Body"
                         float3 lightDirectionWS = _LightDirection; // 使用预定义的光源方向
                     #endif
 
-                    float4 positionCS = TransformWorldToHClip(ApplyShadowBias(positionWS, normalWS, lightDirectionWS)); // 应用阴影偏移
+                    float4 positionCS = TransformWorldToHClip(ApplyShadowBias(positionWS, -normalWS, lightDirectionWS)); // 应用阴影偏移
 
                     // 根据平台的Z缓冲区方向调整Z值
                     #if UNITY_REVERSED_Z // 反转Z缓冲区
